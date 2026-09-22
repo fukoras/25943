@@ -64,8 +64,18 @@ static void do_u(void)  // Печатает значение ulimit
     struct rlimit rl;
     if (getrlimit(RLIMIT_FSIZE, &rl) == 0)
     {
-        printf("ulimit (RLIMIT_FSIZE): soft = %ld, hard = %ld\n", 
-            (long)rl.rlim_cur, (long)rl.rlim_max);
+        printf("ulimit (RLIMIT_FSIZE): soft = ");
+        if (rl.rlim_cur == RLIM_INFINITY)
+            printf("unlimited");
+        else
+            printf("%ld", (long)rl.rlim_cur);
+
+        printf(", hard = ");
+        if (rl.rlim_max == RLIM_INFINITY)
+            printf("unlimited");
+        else
+            printf("%ld", (long)rl.rlim_max);
+        printf("\n");
     }
     else
     {
@@ -108,8 +118,18 @@ static void do_c(void) // Выводит размер core-файла в бай�
     struct rlimit rl;
     if (getrlimit(RLIMIT_CORE, &rl) == 0)
     {
-        printf("core file size limit: soft=%ld, hard=%ld\n", 
-            (long)rl.rlim_cur, (long)rl.rlim_max);
+        printf("core file size limit: soft=");
+        if (rl.rlim_cur == RLIM_INFINITY)
+            printf("unlimited");
+        else
+            printf("%ld", (long)rl.rlim_cur);
+
+        printf(", hard=");
+        if (rl.rlim_max == RLIM_INFINITY)
+            printf("unlimited");
+        else
+            printf("%ld", (long)rl.rlim_max);
+        printf("\n");
     }
     else
     {
@@ -119,7 +139,28 @@ static void do_c(void) // Выводит размер core-файла в бай�
 
 static void do_C(const char *arg) // Изменяет размер core-файла
 {
-    if (!arg)
+{
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_CORE, &rl) == 0)
+    {
+        printf("core file size limit: soft=");
+        if (rl.rlim_cur == RLIM_INFINITY)
+            printf("unlimited");
+        else
+            printf("%ld", (long)rl.rlim_cur);
+
+        printf(", hard=");
+        if (rl.rlim_max == RLIM_INFINITY)
+            printf("unlimited");
+        else
+            printf("%ld", (long)rl.rlim_max);
+        printf("\n");
+    }
+    else
+    {
+        perror("getrlimit");
+    }
+}    if (!arg)
     {
         fprintf(stderr, "-C requires argument\n");
         return;
