@@ -33,7 +33,7 @@ int main(int argc, char *argv[])
     print_ids("to setuid");
     try_open(path);
 
-    if (setuid(geteuid()) != 0){
+    if (setuid(getuid()) != 0){
         perror("setuid");
         return 1;
     }
