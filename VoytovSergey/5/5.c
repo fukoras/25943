@@ -31,8 +31,9 @@ static int set_canonical_terminal(void)
     saved_termios = t;
     termios_saved = 1;
 
-    t.c_lflag |= ICANON | ECHO | ISIG;
-    t.c_lflag &= ~IEXTEN;
+    t.c_lflag |= ICANON | ECHO | ISIG | IEXTEN | ECHOCTL;
+
+    t.c_iflag |= ICRNL;
     t.c_iflag &= ~(IXON | IXOFF | IXANY);
 
     if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == -1)
