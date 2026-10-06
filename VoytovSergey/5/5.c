@@ -6,6 +6,7 @@
 #include <string.h>
 #include <termios.h>
 #include <ctype.h>
+#include <signal.h>
 
 #define BUF_SIZE 1
 
@@ -51,19 +52,40 @@ static void restore_terminal(void)
     }
 }
 
-static int input_is_clean(const char *s)
+static void on_fatal_signal(int sig)
 {
-    for (size_t i = 0; s[i] != '\0'; i++)
+    (void)sig;
+    restore_terminal();
+    _exit(1);
+}
+
+static void install_fatal_handlers(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_fatal_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGQUIT, &sa, NULL);
+    sigaction(SIGHUP,  &sa, NULL);
+}
+
+static void sanitize_input(char *s)
+{
+    size_t r = 0, w = 0;
+    while (s[r] != '\0')
     {
-        unsigned char c = (unsigned char)s[i];
-        if (c == '\n' || c == '\t')
-            continue;
-        if (c < 0x20 || c == 0x7f)
-            return 0;
-        if (c >= 0x80)
-            return 0;
+        unsigned char c = (unsigned char)s[r];
+        if (c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7f))
+        {
+            s[w++] = s[r];
+        }
+        r++;
     }
-    return 1;
+    s[w] = '\0';
 }
 
 static void flush_input(void)
@@ -156,6 +178,8 @@ int main(int argc, char *argv[])
         printf("  string %2zu: offset = %lld, length = %lld\n",
                i, (long long)table[i].offset, (long long)table[i].length);
 
+    install_fatal_handlers();
+
     if (set_canonical_terminal() == -1)
     {
         close(fd);
@@ -180,12 +204,7 @@ int main(int argc, char *argv[])
             break;
         }
 
-        if (!input_is_clean(input))
-        {
-            printf("ERROR: control characters are not allowed\n");
-            flush_input();
-            continue;
-        }
+        sanitize_input(input);
 
         char *end;
         long num = strtol(input, &end, 10);
