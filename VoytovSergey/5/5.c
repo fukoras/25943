@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <string.h>
+#include <termios.h>
 
 #define BUF_SIZE 1
 
@@ -11,6 +12,30 @@ struct line_info {
     off_t offset;
     off_t length;
 };
+
+static struct termios saved_termios;
+static int termios_saved = 0;
+
+static void setup_terminal(void)
+{
+    struct termios t;
+    if (tcgetattr(STDIN_FILENO, &t) == -1)
+        return;
+    saved_termios = t;
+    termios_saved = 1;
+    t.c_lflag |= ICANON | ECHO | ISIG | IEXTEN;
+    t.c_lflag &= ~ECHOCTL;
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
+static void restore_terminal(void)
+{
+    if (termios_saved)
+    {
+        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+        termios_saved = 0;
+    }
+}
 
 static void sanitize_input(char *s)
 {
@@ -108,6 +133,8 @@ int main(int argc, char *argv[])
         printf("  string %2zu: offset = %lld, length = %lld\n",
                i, (long long)table[i].offset, (long long)table[i].length);
 
+    setup_terminal();
+
     char input[64];
     while (1)
     {
@@ -184,6 +211,7 @@ int main(int argc, char *argv[])
         free(out);
     }
 
+    restore_terminal();
     free(table);
     close(fd);
     return 0;
