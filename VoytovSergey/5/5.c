@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
     }
     if (n == -1) 
     {
-        perror("read");
+        perror("FATAL ERROR of read");
         close(fd);
         free(table);
         return 1;
