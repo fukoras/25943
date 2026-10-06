@@ -5,8 +5,8 @@
 #include <sys/types.h>
 #include <string.h>
 #include <termios.h>
-#include <ctype.h>
 #include <signal.h>
+#include <errno.h>
 
 #define BUF_SIZE 1
 
@@ -32,11 +32,14 @@ static int set_canonical_terminal(void)
     termios_saved = 1;
 
     t.c_lflag |= ICANON | ECHO | ISIG | IEXTEN | ECHOCTL;
-
     t.c_iflag |= ICRNL;
     t.c_iflag &= ~(IXON | IXOFF | IXANY);
 
+#ifdef TCSETS
+    if (tcsetattr(STDIN_FILENO, TCSETS, &t) == -1)
+#else
     if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == -1)
+#endif
     {
         perror("FATAL ERROR of tcsetattr");
         return -1;
@@ -48,7 +51,11 @@ static void restore_terminal(void)
 {
     if (termios_saved)
     {
+#ifdef TCSETS
+        tcsetattr(STDIN_FILENO, TCSETS, &saved_termios);
+#else
         tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+#endif
         termios_saved = 0;
     }
 }
@@ -74,26 +81,59 @@ static void install_fatal_handlers(void)
     sigaction(SIGHUP,  &sa, NULL);
 }
 
-static void sanitize_input(char *s)
+static ssize_t read_line(int fd, char *buf, size_t size)
 {
-    size_t r = 0, w = 0;
-    while (s[r] != '\0')
+    size_t i = 0;
+    while (i + 1 < size)
     {
-        unsigned char c = (unsigned char)s[r];
-        if (c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7f))
+        unsigned char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n == 0)
+            break;
+        if (n < 0)
         {
-            s[w++] = s[r];
+            if (errno == EINTR)
+                continue;
+            return -1;
         }
-        r++;
-    }
-    s[w] = '\0';
-}
 
-static void flush_input(void)
-{
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF)
-        ;
+        if (c == '\n')
+        {
+            buf[i++] = '\n';
+            break;
+        }
+
+        if (c == 0x1B)
+        {
+            unsigned char next;
+            ssize_t m = read(fd, &next, 1);
+            if (m != 1)
+                continue;
+            if (next == '[' || next == 'O')
+            {
+                while (read(fd, &next, 1) == 1)
+                {
+                    if ((next >= 'A' && next <= 'Z') ||
+                        (next >= 'a' && next <= 'z') ||
+                        next == '~')
+                        break;
+                }
+            }
+            continue;
+        }
+
+        if (c == 0x7F || c == 0x08)
+        {
+            if (i > 0)
+                i--;
+            continue;
+        }
+
+        if (c >= 0x20 && c < 0x7F)
+            buf[i++] = (char)c;
+    }
+    buf[i] = '\0';
+    return (ssize_t)i;
 }
 
 int main(int argc, char *argv[])
@@ -196,16 +236,15 @@ int main(int argc, char *argv[])
 
         memset(input, 0, sizeof(input));
 
-        if (!fgets(input, sizeof(input), stdin))
+        ssize_t got = read_line(STDIN_FILENO, input, sizeof(input));
+        if (got <= 0)
         {
             if (feof(stdin))
                 printf("\nEOF - exit\n");
             else
-                perror("FATAL ERROR of fgets");
+                perror("FATAL ERROR of read_line");
             break;
         }
-
-        sanitize_input(input);
 
         char *end;
         long num = strtol(input, &end, 10);
@@ -245,20 +284,20 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        ssize_t got = read(fd, out, li.length);
-        if (got < 0)
+        ssize_t r = read(fd, out, li.length);
+        if (r < 0)
         {
             perror("ERROR of read");
             free(out);
             continue;
         }
 
-        out[got] = '\0';
+        out[r] = '\0';
         char prefix[64];
         int plen = snprintf(prefix, sizeof(prefix), "String %ld: ", num);
         write(STDOUT_FILENO, prefix, plen);
-        write(STDOUT_FILENO, out, got);
-        if (got == 0 || out[got - 1] != '\n')
+        write(STDOUT_FILENO, out, r);
+        if (r == 0 || out[r - 1] != '\n')
             write(STDOUT_FILENO, "\n", 1);
 
         free(out);
