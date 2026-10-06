@@ -35,26 +35,28 @@ static int install_alarm(void)
 
 static void print_file(int fd)
 {
-    if (lseek(fd, 0, SEEK_SET) == (off_t)-1) 
+    if (lseek(fd, 0, SEEK_SET) == (off_t)-1)
     {
         perror("FATAL ERROR lseek");
         return;
     }
     char buf[READ_BLOCK];
     ssize_t n;
-    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+    {
         ssize_t off = 0;
-        while (off < n) {
+        while (off < n)
+        {
             ssize_t w = write(STDOUT_FILENO, buf + off, n - off);
-            if (w < 0) 
-            { 
+            if (w < 0)
+            {
                 perror("ERROR write");
-                 return;
+                return;
             }
             off += w;
         }
     }
-    if (n < 0) 
+    if (n < 0)
         perror("ERROR read");
 }
 
@@ -79,26 +81,26 @@ int main(int argc, char *argv[])
     char buf[READ_BLOCK];
     ssize_t n;
 
-    while ((n = read(fd, buf, sizeof(buf))) > 0) 
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
     {
-        for (ssize_t i = 0; i < n; i++) 
+        for (ssize_t i = 0; i < n; i++)
         {
             if (buf[i] == '\n')
             {
                 off_t line_end = pos + i + 1;
                 off_t length = line_end - line_start;
 
-                if (count == capacity) 
+                if (count == capacity)
                 {
                     capacity = capacity ? capacity * 2 : 16;
                     struct line_info *tmp =
                         realloc(table, capacity * sizeof(*table));
-                    if (!tmp) 
-                    { 
-                        perror("realloc"); 
-                        close(fd); 
-                        free(table); 
-                        return 1; 
+                    if (!tmp)
+                    {
+                        perror("FATAL ERROR of realloc");
+                        close(fd);
+                        free(table);
+                        return 1;
                     }
                     table = tmp;
                 }
@@ -117,18 +119,18 @@ int main(int argc, char *argv[])
         free(table);
         return 1;
     }
-    if (pos > line_start) 
+    if (pos > line_start)
     {
-        if (count == capacity) 
+        if (count == capacity)
         {
             capacity = capacity ? capacity * 2 : 16;
             struct line_info *tmp = realloc(table, capacity * sizeof(*table));
             if (!tmp)
             {
-                perror("realloc"); 
-                close(fd); 
-                free(table); 
-                return 1; 
+                perror("FATAL ERROR of realloc");
+                close(fd);
+                free(table);
+                return 1;
             }
             table = tmp;
         }
@@ -141,7 +143,7 @@ int main(int argc, char *argv[])
     for (size_t i = 0; i < count; i++)
         printf("  string %2zu: offset = %lld, length = %lld\n",
                i, (long long)table[i].offset, (long long)table[i].length);
-    
+
     if (install_alarm() == -1)
     {
         perror("FATAL ERROR of sigaction");
@@ -150,20 +152,27 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    int timer_active = 1;
     char input[64];
+
     while (1)
     {
-        printf("\nWrite the number of string (0 - exit), %d sec: ", TIMEOUT_SEC);
+        printf("\nWrite the number of string (0 - exit): ");
         fflush(stdout);
 
-        timed_out = 0;
-        alarm(TIMEOUT_SEC);
+        if (timer_active)
+        {
+            errno = 0;
+            timed_out = 0;
+            alarm(TIMEOUT_SEC);
+        }
 
         if (!fgets(input, sizeof(input), stdin))
         {
-            alarm(0);   
+            if (timer_active)
+                alarm(0);
 
-            if (errno == EINTR && timed_out)
+            if (timer_active && errno == EINTR && timed_out)
             {
                 printf("\nTime is up! Printing whole file:\n");
                 print_file(fd);
@@ -179,7 +188,11 @@ int main(int argc, char *argv[])
             break;
         }
 
-        alarm(0);  
+        if (timer_active)
+        {
+            alarm(0);
+            timer_active = 0;
+        }
 
         char *end;
         long num = strtol(input, &end, 10);
@@ -242,5 +255,3 @@ int main(int argc, char *argv[])
     close(fd);
     return 0;
 }
-
-    
