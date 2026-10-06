@@ -164,20 +164,27 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    int timer_active = 1;
     char input[64];
+
     while (1)
     {
-        printf("\nWrite the number of string (0 - exit), %d sec: ", TIMEOUT_SEC);
+        printf("\nWrite the number of string (0 - exit): ");
         fflush(stdout);
 
-        timed_out = 0;
-        alarm(TIMEOUT_SEC);
+        if (timer_active)
+        {
+            errno = 0;
+            timed_out = 0;
+            alarm(TIMEOUT_SEC);
+        }
 
         if (!fgets(input, sizeof(input), stdin))
         {
-            alarm(0);
+            if (timer_active)
+                alarm(0);
 
-            if (errno == EINTR && timed_out)
+            if (timer_active && errno == EINTR && timed_out)
             {
                 printf("\nTime is up! Printing whole file:\n");
                 print_file(base, file_size);
@@ -193,7 +200,11 @@ int main(int argc, char *argv[])
             break;
         }
 
-        alarm(0);
+        if (timer_active)
+        {
+            alarm(0);
+            timer_active = 0;
+        }
 
         char *end;
         long num = strtol(input, &end, 10);
