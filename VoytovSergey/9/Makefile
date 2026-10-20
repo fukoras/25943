@@ -1,14 +1,14 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Wpedantic 
+CFLAGS = -Wall -Wextra -Wpedantic
 TARGET = 9
 SOURCE = 9.c
 
 all: $(TARGET)
 
-$(TARGET) : $(SOURCE)
+$(TARGET): $(SOURCE)
 	$(CC) $(CFLAGS) $(SOURCE) -o $(TARGET)
 
 clean:
-	rm $(TARGET)
+	rm -f $(TARGET)
 
 .PHONY: all clean
