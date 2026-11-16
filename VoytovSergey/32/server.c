@@ -4,7 +4,6 @@
 #define _GNU_SOURCE
 #endif
 
-#include <aio.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -29,37 +28,18 @@
 #define MAX_CLIENTS 64
 #define BUF_SIZE 1024
 
-typedef struct {
-    bool active;
-    int fd;
-    struct aiocb cb;
-    char buf[BUF_SIZE];
-    volatile sig_atomic_t completed;
-} ClientSlot;
-
-static ClientSlot clients[MAX_CLIENTS];
+static int client_fds[MAX_CLIENTS];
 static volatile sig_atomic_t running = 1;
-static volatile sig_atomic_t got_accept_sig = 0;
-static volatile sig_atomic_t got_aio_sig = 0;
+static volatile sig_atomic_t got_sigpoll = 0;
 
 static void handle_term_sig(int sig) {
     (void)sig;
     running = 0;
 }
 
-static void handle_accept_sig(int sig) {
+static void handle_sigpoll(int sig) {
     (void)sig;
-    got_accept_sig = 1;
-}
-
-static void handle_aio_sig(int sig, siginfo_t *info, void *ucontext) {
-    (void)sig;
-    (void)ucontext;
-    got_aio_sig = 1;
-    if (info != NULL && info->si_value.sival_ptr != NULL) {
-        ClientSlot *slot = (ClientSlot *)info->si_value.sival_ptr;
-        slot->completed = 1;
-    }
+    got_sigpoll = 1;
 }
 
 static void to_upper_and_print(char *buf, ssize_t len) {
@@ -80,22 +60,65 @@ static void to_upper_and_print(char *buf, ssize_t len) {
     }
 }
 
-static bool start_async_read(ClientSlot *slot) {
-    slot->completed = 0;
-    memset(&slot->cb, 0, sizeof(struct aiocb));
-    slot->cb.aio_fildes = slot->fd;
-    slot->cb.aio_buf = slot->buf;
-    slot->cb.aio_nbytes = BUF_SIZE;
-    slot->cb.aio_offset = 0;
-    slot->cb.aio_sigevent.sigev_notify = SIGEV_SIGNAL;
-    slot->cb.aio_sigevent.sigev_signo = SIGUSR1;
-    slot->cb.aio_sigevent.sigev_value.sival_ptr = slot;
-
-    if (aio_read(&slot->cb) == -1) {
-        perror("aio_read");
+/* Включаем неблокирующий режим и генерацию SIGPOLL/SIGIO для сокета */
+static bool enable_async_io(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl F_GETFL");
         return false;
     }
+
+#ifdef __sun
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl O_NONBLOCK");
+        return false;
+    }
+    if (ioctl(fd, I_SETSIG, S_INPUT | S_RDNORM | S_HANGUP) == -1) {
+        perror("ioctl I_SETSIG");
+        return false;
+    }
+#else
+    if (fcntl(fd, F_SETOWN, getpid()) == -1) {
+        perror("fcntl F_SETOWN");
+        return false;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK | O_ASYNC) == -1) {
+        perror("fcntl O_ASYNC");
+        return false;
+    }
+#endif
     return true;
+}
+
+static void drain_client(int idx) {
+    char buf[BUF_SIZE];
+    int fd = client_fds[idx];
+    if (fd == -1) {
+        return;
+    }
+
+    while (1) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n > 0) {
+            to_upper_and_print(buf, n);
+        } else if (n == 0) {
+            /* Клиент закрыл соединение */
+            close(fd);
+            client_fds[idx] = -1;
+            break;
+        } else {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            perror("read client");
+            close(fd);
+            client_fds[idx] = -1;
+            break;
+        }
+    }
 }
 
 static void accept_new_clients(int listen_fd) {
@@ -114,7 +137,7 @@ static void accept_new_clients(int listen_fd) {
 
         int idx = -1;
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (!clients[i].active) {
+            if (client_fds[i] == -1) {
                 idx = i;
                 break;
             }
@@ -126,54 +149,25 @@ static void accept_new_clients(int listen_fd) {
             continue;
         }
 
-        clients[idx].active = true;
-        clients[idx].fd = client_fd;
-        if (!start_async_read(&clients[idx])) {
+        if (!enable_async_io(client_fd)) {
             close(client_fd);
-            clients[idx].active = false;
-            clients[idx].fd = -1;
-        }
-    }
-}
-
-static void process_completed_aio(void) {
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (!clients[i].active) {
             continue;
         }
 
-        int err = aio_error(&clients[i].cb);
-        if (err == EINPROGRESS) {
-            continue;
-        }
-
-        ssize_t n = aio_return(&clients[i].cb);
-        if (err == 0 && n > 0) {
-            to_upper_and_print(clients[i].buf, n);
-            if (!start_async_read(&clients[i])) {
-                close(clients[i].fd);
-                clients[i].active = false;
-                clients[i].fd = -1;
-            }
-        } else {
-            /* EOF (n == 0) или ошибка чтения -> закрываем клиента */
-            close(clients[i].fd);
-            clients[i].active = false;
-            clients[i].fd = -1;
-        }
+        client_fds[idx] = client_fd;
+        /* На случай, если клиент отправил данные сразу после connect() */
+        drain_client(idx);
     }
 }
 
 int main(void) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        clients[i].active = false;
-        clients[i].fd = -1;
+        client_fds[i] = -1;
     }
 
-    // Блокируем сигналы перед настройкой, чтобы избежать гонок с sigsuspend
+    /* Блокируем сигналы перед настройкой, чтобы избежать гонок с sigsuspend */
     sigset_t block_mask, old_mask;
     sigemptyset(&block_mask);
-    sigaddset(&block_mask, SIGUSR1);
     sigaddset(&block_mask, SIGPOLL);
     sigaddset(&block_mask, SIGINT);
     sigaddset(&block_mask, SIGTERM);
@@ -188,16 +182,10 @@ int main(void) {
     sigaction(SIGINT, &sa_term, NULL);
     sigaction(SIGTERM, &sa_term, NULL);
 
-    struct sigaction sa_acc;
-    memset(&sa_acc, 0, sizeof(sa_acc));
-    sa_acc.sa_handler = handle_accept_sig;
-    sigaction(SIGPOLL, &sa_acc, NULL);
-
-    struct sigaction sa_aio;
-    memset(&sa_aio, 0, sizeof(sa_aio));
-    sa_aio.sa_sigaction = handle_aio_sig;
-    sa_aio.sa_flags = SA_SIGINFO;
-    sigaction(SIGUSR1, &sa_aio, NULL);
+    struct sigaction sa_poll;
+    memset(&sa_poll, 0, sizeof(sa_poll));
+    sa_poll.sa_handler = handle_sigpoll;
+    sigaction(SIGPOLL, &sa_poll, NULL);
 
     int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (listen_fd == -1) {
@@ -218,37 +206,11 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    // Переводим слушающий сокет в неблокирующий + сигнальный режим
-    int flags = fcntl(listen_fd, F_GETFL, 0);
-    if (flags == -1) {
-        perror("fcntl F_GETFL");
+    if (!enable_async_io(listen_fd)) {
         close(listen_fd);
         unlink(SOCKET_PATH);
         return EXIT_FAILURE;
     }
-
-#ifdef __sun
-    if (fcntl(listen_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        perror("fcntl O_NONBLOCK");
-        close(listen_fd);
-        unlink(SOCKET_PATH);
-        return EXIT_FAILURE;
-    }
-    if (ioctl(listen_fd, I_SETSIG, S_INPUT | S_RDNORM) == -1) {
-        perror("ioctl I_SETSIG");
-        close(listen_fd);
-        unlink(SOCKET_PATH);
-        return EXIT_FAILURE;
-    }
-#else
-    if (fcntl(listen_fd, F_SETOWN, getpid()) == -1 ||
-        fcntl(listen_fd, F_SETFL, flags | O_NONBLOCK | O_ASYNC) == -1) {
-        perror("fcntl O_ASYNC");
-        close(listen_fd);
-        unlink(SOCKET_PATH);
-        return EXIT_FAILURE;
-    }
-#endif
 
     if (listen(listen_fd, 16) == -1) {
         perror("listen");
@@ -257,10 +219,9 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    printf("Server (POSIX AIO + Signals) listening on %s...\n", SOCKET_PATH);
+    printf("Server (Signal-driven I/O) listening on %s...\n", SOCKET_PATH);
     fflush(stdout);
 
-    // На случай, если клиент успел подключиться до входа в sigsuspend
     accept_new_clients(listen_fd);
 
     while (running) {
@@ -269,19 +230,20 @@ int main(void) {
         if (!running) {
             break;
         }
-        if (got_accept_sig) {
-            got_accept_sig = 0;
+        if (got_sigpoll) {
+            got_sigpoll = 0;
             accept_new_clients(listen_fd);
-        }
-        if (got_aio_sig) {
-            got_aio_sig = 0;
-            process_completed_aio();
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (client_fds[i] != -1) {
+                    drain_client(i);
+                }
+            }
         }
     }
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].active) {
-            close(clients[i].fd);
+        if (client_fds[i] != -1) {
+            close(client_fds[i]);
         }
     }
     close(listen_fd);
