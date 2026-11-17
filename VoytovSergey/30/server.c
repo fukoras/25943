@@ -1,6 +1,13 @@
+#ifdef __sun
+#define __EXTENSIONS__
+#else
+#define _GNU_SOURCE
+#endif
+
 #include <ctype.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,103 +16,107 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define SOCKET_PATH "/tmp/task30_unix.sock"
+#define SOCKET_PATH "/tmp/uds_30_s.voitov_upper.sock"
+#define BUF_SIZE 1024
 
-static int g_server_fd = -1;
+static volatile sig_atomic_t running = 1;
 
-static void cleanup_and_exit(int sig) {
+static void handle_term_sig(int sig) {
     (void)sig;
-    if (g_server_fd != -1) {
-        close(g_server_fd);
-    }
-    unlink(SOCKET_PATH);
-    _exit(130);
+    running = 0;
 }
 
-static int write_all(int fd, const void *data, size_t count) {
-    const char *ptr = (const char *)data;
-    size_t written = 0;
-    while (written < count) {
-        ssize_t n = write(fd, ptr + written, count - written);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        written += (size_t)n;
+static void to_upper_and_print(char *buf, ssize_t len) {
+    for (ssize_t i = 0; i < len; i++) {
+        buf[i] = (char)toupper((unsigned char)buf[i]);
     }
-    return 0;
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t n = write(STDOUT_FILENO, buf + written, (size_t)(len - written));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("write stdout");
+            break;
+        }
+        written += n;
+    }
 }
 
 int main(void) {
-    struct sockaddr_un addr;
-    struct sigaction sa;
+    /* Не даём фоновому процессу остановиться при выводе в терминал */
+    signal(SIGTTOU, SIG_IGN);
 
+    struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = cleanup_and_exit;
-    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = handle_term_sig;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    g_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (g_server_fd < 0) {
+    int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd == -1) {
         perror("socket");
         return EXIT_FAILURE;
     }
 
-    /* Удаляем файл сокета, если он остался от предыдущего запуска */
-    if (unlink(SOCKET_PATH) < 0 && errno != ENOENT) {
-        perror("unlink");
-        close(g_server_fd);
-        return EXIT_FAILURE;
-    }
+    unlink(SOCKET_PATH);
 
+    struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    if (bind(g_server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
-        close(g_server_fd);
+        close(listen_fd);
         return EXIT_FAILURE;
     }
 
-    if (listen(g_server_fd, 1) < 0) {
+    if (listen(listen_fd, 1) == -1) {
         perror("listen");
-        close(g_server_fd);
+        close(listen_fd);
         unlink(SOCKET_PATH);
         return EXIT_FAILURE;
     }
 
-    fprintf(stderr, "Сервер слушает на %s...\n", SOCKET_PATH);
-
-    int client_fd = accept(g_server_fd, NULL, NULL);
-    if (client_fd < 0) {
-        perror("accept");
-        close(g_server_fd);
-        unlink(SOCKET_PATH);
-        return EXIT_FAILURE;
-    }
-
-    char chunk[256];
-    ssize_t n;
-    while ((n = read(client_fd, chunk, sizeof(chunk))) > 0) {
-        for (ssize_t i = 0; i < n; i++) {
-            chunk[i] = (char)toupper((unsigned char)chunk[i]);
-        }
-        if (write_all(STDOUT_FILENO, chunk, (size_t)n) < 0) {
-            perror("write stdout");
+    int client_fd = -1;
+    while (running) {
+        client_fd = accept(listen_fd, NULL, NULL);
+        if (client_fd >= 0) {
             break;
         }
+        if (errno == EINTR) {
+            continue;
+        }
+        perror("accept");
+        close(listen_fd);
+        unlink(SOCKET_PATH);
+        return EXIT_FAILURE;
     }
 
-    if (n < 0) {
-        perror("read socket");
+    close(listen_fd);
+
+    if (client_fd >= 0) {
+        char buf[BUF_SIZE];
+        while (running) {
+            ssize_t n = read(client_fd, buf, sizeof(buf));
+            if (n > 0) {
+                to_upper_and_print(buf, n);
+            } else if (n == 0) {
+                /* Клиент закрыл соединение -> завершаем сервер */
+                break;
+            } else {
+                if (errno == EINTR) {
+                    continue;
+                }
+                perror("read");
+                break;
+            }
+        }
+        close(client_fd);
     }
 
-    /* Клиент закрыл соединение (n == 0) — закрываем дескрипторы и завершаемся */
-    close(client_fd);
-    close(g_server_fd);
     unlink(SOCKET_PATH);
-
     return EXIT_SUCCESS;
 }
