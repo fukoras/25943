@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -102,7 +103,6 @@ static void drain_client(int idx) {
         if (n > 0) {
             to_upper_and_print(buf, n);
         } else if (n == 0) {
-            /* Клиент закрыл соединение */
             close(fd);
             client_fds[idx] = -1;
             break;
@@ -155,17 +155,17 @@ static void accept_new_clients(int listen_fd) {
         }
 
         client_fds[idx] = client_fd;
-        /* На случай, если клиент отправил данные сразу после connect() */
         drain_client(idx);
     }
 }
 
 int main(void) {
+    signal(SIGTTOU, SIG_IGN);
+
     for (int i = 0; i < MAX_CLIENTS; i++) {
         client_fds[i] = -1;
     }
 
-    /* Блокируем сигналы перед настройкой, чтобы избежать гонок с sigsuspend */
     sigset_t block_mask, old_mask;
     sigemptyset(&block_mask);
     sigaddset(&block_mask, SIGPOLL);
@@ -219,7 +219,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    printf("Server (Signal-driven I/O) listening on %s...\n", SOCKET_PATH);
+    printf("Server 32 (Signal-driven I/O) listening on %s...\n", SOCKET_PATH);
     fflush(stdout);
 
     accept_new_clients(listen_fd);

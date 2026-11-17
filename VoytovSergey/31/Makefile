@@ -15,4 +15,3 @@ client: client.c
 
 clean:
 	rm -f server client /tmp/uds_31_s.voitov_upper.sock
-

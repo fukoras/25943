@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -46,6 +47,8 @@ static void to_upper_and_print(char *buf, ssize_t len) {
 }
 
 int main(void) {
+    signal(SIGTTOU, SIG_IGN);
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_sigint;
@@ -86,7 +89,7 @@ int main(void) {
         fds[i].events = POLLIN;
     }
 
-    printf("Server (poll) listening on %s...\n", SOCKET_PATH);
+    printf("Server 31 (poll) listening on %s...\n", SOCKET_PATH);
     fflush(stdout);
 
     char buf[BUF_SIZE];
@@ -101,7 +104,7 @@ int main(void) {
             break;
         }
 
-        // Проверяем новое подключение на слушающем сокете 
+        /* 1. Приём нового подключения */
         if (fds[0].revents & POLLIN) {
             int client_fd = accept(listen_fd, NULL, NULL);
             if (client_fd >= 0) {
@@ -123,7 +126,7 @@ int main(void) {
             }
         }
 
-        // Проверяем активность на всех клиентских дескрипторах 
+        /* 2. Чтение данных от всех активных клиентов без блокировок */
         for (int i = 1; i <= MAX_CLIENTS; i++) {
             if (fds[i].fd == -1) {
                 continue;

@@ -6,7 +6,7 @@ CFLAGS = -Wall -Wextra -O2
 all: server client
 
 server: server.c
-	@LIBS="-lrt"; [ "`uname -s`" = "SunOS" ] && LIBS="-lsocket -lnsl -lrt"; \
+	@LIBS=""; [ "`uname -s`" = "SunOS" ] && LIBS="-lsocket -lnsl"; \
 	$(CC) $(CFLAGS) server.c -o server $$LIBS
 
 client: client.c
@@ -15,4 +15,3 @@ client: client.c
 
 clean:
 	rm -f server client /tmp/uds_32_s.voitov_upper.sock
-
